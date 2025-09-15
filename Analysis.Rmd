@@ -1,0 +1,167 @@
+---
+title: "Injury Analysis"
+author: "Angelo Capasso"
+date: "2025-09-15"
+output: html_document
+---
+
+Loading the packages
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(survival)
+library(tidyverse)
+library(ggplot2)
+library(shiny)
+```
+
+
+Loading the datasets
+```{r}
+event_df <- readRDS("data/event_df.Rds")
+tdc_df_sub <- readRDS("data/tdc_df_sub.Rds")
+```
+
+
+```{r}
+tdc_df_sub %>%
+  mutate(Fatigue = P1,
+         Sleep = P2,
+         Pain = P3,
+         Stress = P4,
+         Mood = P5) %>%
+  select(player, player_position, Fatigue, Sleep, Pain, Stress, Mood) %>%
+  pivot_longer(cols = c(Fatigue, Sleep, Pain, Stress, Mood), names_to = "P", values_to = "Value") %>%
+  group_by(player_position, P, Value) %>%
+  count() %>%
+  group_by(player_position, P) %>%
+  mutate(rel_freq = n / sum(n)) %>%
+  ggplot(aes(x = Value, y = rel_freq, fill = player_position)) +
+  geom_col(position = "dodge") +
+  facet_wrap(~ P) +
+  labs(
+    title = "Distributions of main aspect",
+    x = "Value",
+    y = "Relative counts",
+    fill = "Player position"
+  ) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  theme_minimal()
+```
+
+
+```{r}
+tdc_unique <- tdc_df_sub %>%
+  distinct(date_gps, .keep_all = TRUE)
+
+event_joined <- event_df %>%
+  left_join(tdc_unique, by = c("date_injured" = "date_gps"))
+```
+
+
+```{r}
+library(lattice)
+
+freq_player_position <- event_joined %>%
+  count(player_position) %>%
+  mutate(rel_freq = n / sum(n))
+
+# Barplot con lattice
+barchart(rel_freq ~ player_position, data = freq_player_position,
+         main = "Relative Frequency of Player Positions",
+         xlab = "Player Position",
+         ylab = "Relative Frequency",
+         col = "steelblue",
+         scales = list(x = list(rot = 45)))
+```
+
+
+```{r}
+library(shiny)
+event_df <- event_df %>%
+  mutate(date_injured = as.Date(date_injured))
+
+tdc_df_sub <- tdc_df_sub %>%
+  mutate(date_gps = as.Date(date_gps))
+
+# Mapping readable variable names
+var_map <- c(
+  "Fatigue" = "P1",
+  "Sleep"   = "P2",
+  "Pain"    = "P3",
+  "Stress"  = "P4",
+  "Mood"    = "P5"
+)
+
+players <- sort(unique(tdc_df_sub$player))
+
+# --- SHINY APP ---
+shinyApp(
+  ui = fluidPage(
+    titlePanel("Player Variables Trend with Injuries"),
+    sidebarLayout(
+      sidebarPanel(
+        selectInput("player_selected", "Select Player:", choices = players),
+        selectInput("var_selected", "Select Variable:", choices = names(var_map)),
+        dateRangeInput("date_range", "Select Date Range:",
+                       start = min(tdc_df_sub$date_gps, na.rm = TRUE),
+                       end = max(tdc_df_sub$date_gps, na.rm = TRUE))
+      ),
+      mainPanel(plotOutput("plot", height = "600px"))
+    )
+  ),
+  
+  server = function(input, output, session) {
+    
+    output$plot <- renderPlot({
+      var_label <- input$var_selected
+      var_col <- var_map[[var_label]]
+      player_sel <- input$player_selected
+
+      # Filter data for selected player and date range
+      df_plot <- tdc_df_sub %>%
+        filter(player == player_sel,
+               date_gps >= input$date_range[1],
+               date_gps <= input$date_range[2])
+
+      # If no data is available, show a message
+      if(nrow(df_plot) == 0){
+        plot.new()
+        text(0.5, 0.5, paste("No data available for", player_sel,
+                              "in the selected date range"),
+             cex = 1.2)
+        return()
+      }
+
+      # Filter injuries only for selected player
+      df_inj <- event_df %>%
+        filter(player == player_sel,
+               date_injured >= input$date_range[1],
+               date_injured <= input$date_range[2])
+
+      # Base R plot
+      plot(df_plot$date_gps, df_plot[[var_col]], type = "l", col = "blue",
+           lwd = 2, xlab = "Date", ylab = var_label,
+           main = paste(var_label, "for", player_sel))
+      points(df_plot$date_gps, df_plot[[var_col]], pch = 16, col = "blue")
+
+      # Vertical dashed red lines for player injuries
+      for(d in df_inj$date_injured){
+        abline(v = d, col = "red", lty = 2, lwd = 1.5)
+      }
+
+      # Red points on injury dates with data
+      df_inj_points <- df_inj %>%
+        filter(date_injured %in% df_plot$date_gps) %>%
+        left_join(df_plot, by = c("date_injured" = "date_gps"))
+
+      if(nrow(df_inj_points) > 0){
+        points(df_inj_points$date_injured, df_inj_points[[var_col]], col = "red", pch = 19, cex = 1.5)
+      }
+    })
+    
+  }
+)
+```
+
+
+
